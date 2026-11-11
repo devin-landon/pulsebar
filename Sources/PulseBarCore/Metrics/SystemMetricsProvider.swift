@@ -2,10 +2,16 @@ import Foundation
 
 public protocol SystemMetricsProviding: AnyObject {
     func sample() -> SystemSnapshot
+    /// Clears stateful sampler baselines (CPU ticks, network counters) after sleep.
+    func resetBaselines()
 }
 
-/// The production provider. Sampling happens on the main actor and is cheap
-/// enough for a one-second cadence; M1 moves it to a serial background queue.
+public extension SystemMetricsProviding {
+    func resetBaselines() {}
+}
+
+/// Production provider. Must only be sampled from `MetricsScheduler`'s serial
+/// queue so `CPUSampler` / `NetworkSampler` state stays single-threaded.
 public final class SystemMetricsProvider: SystemMetricsProviding {
     private let cpu = CPUSampler()
     private let memory = MemorySampler()
@@ -37,5 +43,10 @@ public final class SystemMetricsProvider: SystemMetricsProviding {
             uploadBytesPerSecond: networkReading.upload,
             sampledAt: Date()
         )
+    }
+
+    public func resetBaselines() {
+        cpu.reset()
+        network.reset()
     }
 }

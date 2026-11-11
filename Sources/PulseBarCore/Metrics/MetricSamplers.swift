@@ -5,6 +5,7 @@ import IOKit
 // MARK: - CPU
 
 /// Aggregates per-core CPU tick deltas into a single 0...1 utilization value.
+/// Must only be accessed from the metrics serial queue (`MetricsScheduler`).
 final class CPUSampler {
     private var previousTicks: [UInt32]?
 
@@ -43,22 +44,12 @@ final class CPUSampler {
         let previous = previousTicks
         previousTicks = ticks
 
-        guard let previous, previous.count == ticks.count else { return nil }
+        guard let previous else { return nil }
+        return CPUTickAccumulator.utilization(previous: previous, current: ticks)
+    }
 
-        var busy: Double = 0
-        var total: Double = 0
-        for index in stride(from: 0, to: ticks.count, by: 4) {
-            let user = Double(ticks[index] &- previous[index])
-            let system = Double(ticks[index + 1] &- previous[index + 1])
-            let idle = Double(ticks[index + 2] &- previous[index + 2])
-            let nice = Double(ticks[index + 3] &- previous[index + 3])
-
-            busy += user + system + nice
-            total += user + system + idle + nice
-        }
-
-        guard total > 0 else { return nil }
-        return min(max(busy / total, 0), 1)
+    func reset() {
+        previousTicks = nil
     }
 }
 
@@ -124,8 +115,10 @@ final class DiskSampler {
 
 // MARK: - Network
 
+/// Must only be accessed from the metrics serial queue (`MetricsScheduler`).
 final class NetworkSampler {
-    private var previous: (received: UInt64, sent: UInt64, date: Date)?
+    private var downloadRate = RateCalculator()
+    private var uploadRate = RateCalculator()
 
     func sample() -> (download: Double?, upload: Double?) {
         var totalReceived: UInt64 = 0
@@ -158,21 +151,14 @@ final class NetworkSampler {
         }
 
         let now = Date()
-        let previous = self.previous
-        self.previous = (totalReceived, totalSent, now)
-
-        guard let previous else { return (nil, nil) }
-        let elapsed = now.timeIntervalSince(previous.date)
-        // Skip the first sample after sleep/wake instead of reporting a spike.
-        guard elapsed > 0, elapsed < 10 else { return (nil, nil) }
-
-        let download = totalReceived >= previous.received
-            ? Double(totalReceived - previous.received) / elapsed
-            : nil
-        let upload = totalSent >= previous.sent
-            ? Double(totalSent - previous.sent) / elapsed
-            : nil
+        let download = downloadRate.rate(bytes: totalReceived, at: now)
+        let upload = uploadRate.rate(bytes: totalSent, at: now)
         return (download, upload)
+    }
+
+    func reset() {
+        downloadRate.reset()
+        uploadRate.reset()
     }
 }
 

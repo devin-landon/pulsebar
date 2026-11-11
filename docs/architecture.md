@@ -1,6 +1,6 @@
 # PulseBar 架构说明
 
-- 状态：M0 框架
+- 状态：M1 进行中（M1.1 完成）
 - 更新：2026-11-11
 - 相关：`roadmap.md`、`AGENTS.md`、`docs/battery-research.md`
 
@@ -27,6 +27,7 @@ flowchart LR
     end
 
     subgraph Core[PulseBarCore · 无 UI]
+        MS[MetricsScheduler]
         MP[SystemMetricsProvider]
         CPU[CPUSampler]
         MEM[MemorySampler]
@@ -44,7 +45,8 @@ flowchart LR
     SI --> DS
     DV --> DS
     SV --> AP
-    DS --> MP
+    DS --> MS
+    MS --> MP
     DS --> BM
     MP --> CPU & MEM & DISK & NET & GPU & TMP
     BM --> HID & GC & MG
@@ -67,6 +69,9 @@ Sources/PulseBarCore/
 ├── Models/PeripheralBattery.swift      # 外设模型与枚举
 ├── Metrics/MetricSamplers.swift        # CPU/内存/磁盘/网络/GPU/温度
 ├── Metrics/SystemMetricsProvider.swift # 组合采样
+├── Metrics/MetricsScheduler.swift      # 串行后台调度
+├── Metrics/RateCalculator.swift        # 字节计数 → B/s
+├── Metrics/CPUTickAccumulator.swift    # CPU tick 差分
 ├── Metrics/DemoMetricsProvider.swift   # 演示数据
 ├── Battery/BatteryProviding.swift      # Provider 协议
 ├── Battery/HIDBatteryProvider.swift    # IORegistry
@@ -109,17 +114,20 @@ sequenceDiagram
     participant User
     participant SI as StatusItemController
     participant DS as DashboardStore
+    participant MS as MetricsScheduler
     participant MP as SystemMetricsProvider
     participant BM as PeripheralBatteryMonitor
     participant View as DashboardView
 
     User->>SI: 左键
-    SI->>DS: sample()
+    SI->>DS: sample() → requestSample
     SI->>BM: refresh()
     SI->>View: show popover
     loop 每秒
-        DS->>MP: sample()
-        MP-->>DS: SystemSnapshot
+        DS->>MS: timer / requestSample
+        MS->>MP: sample() on serial queue
+        MP-->>MS: SystemSnapshot
+        MS-->>DS: callback → MainActor apply
         DS-->>View: @Published snapshot
     end
     loop 每 30 秒
@@ -130,14 +138,16 @@ sequenceDiagram
 
 ## 5. 指标采样
 
-`SystemMetricsProvider.sample()` 同步组合六个采样器：
+`MetricsScheduler` 在串行队列 `com.dvnlandon.pulsebar.metrics` 上调用
+`SystemMetricsProvider.sample()`，再把快照回主线程交给 `DashboardStore`。
+CPU / 网络采样器状态只在该队列访问。
 
 | 指标 | 当前实现 | 已知限制 |
 | --- | --- | --- |
-| CPU | `host_processor_info` per-core tick 差分 | 主线程采样；M1.1 移出 |
+| CPU | `host_processor_info` + `CPUTickAccumulator` | EMA / P-E 分组见 M1.2 |
 | 内存 | `host_statistics64`：active + wired + compressed | 与 Activity Monitor 可能有小差异 |
 | 磁盘 | `/` 的 `volumeTotalCapacity` + `volumeAvailableCapacityForImportantUsage` | 只有内置卷；M1.6 加外置 |
-| 网络 | `getifaddrs` + `if_data`（32 位） | 未处理 VPN/回绕；M1.7 |
+| 网络 | `getifaddrs` + `RateCalculator`（仍为 32 位 `if_data`） | VPN/64 位见 M1.7 |
 | GPU | IOKit `IOAccelerator` → `PerformanceStatistics["Device Utilization %"]` | 部分机型无该键 |
 | 温度 | 占位返回 `nil` | M1.5 私有 HID |
 
@@ -167,11 +177,10 @@ flowchart LR
 
 ## 7. 线程与定时器
 
-- 当前：所有采样与 UI 在主线程。采样耗时低（毫秒级），但 M1.1 会移到串行后台上下文。
+- 指标：`MetricsScheduler`（`DispatchSourceTimer` + 串行队列）采样；`DashboardStore` 只在主线程 `apply`。
+- 电量 / 菜单栏标签：仍用主线程 `Timer`（`PeripheralBatteryMonitor`、`StatusItemController`）。
 - `DashboardStore` / `PeripheralBatteryMonitor` / `StatusItemController` 均 `@MainActor`。
-- 定时器使用 `Timer` + `RunLoop.main.add(_, forMode: .common)`，tolerance 降低唤醒。
-- 定时器闭包用 `Task { @MainActor [weak self] ... }`，避免跨 actor 访问。
-- 睡眠/唤醒（M1.8）会暂停/恢复；当前尚未监听，合盖后计时器可能堆积一次。
+- 调度器提供 `pause` / `resume` / `resetBaselines` 钩子；睡眠通知接线见 M1.8。
 
 ## 8. 数据与持久化
 
@@ -234,7 +243,7 @@ flowchart LR
 
 ## 12. 已知技术债（按 roadmap）
 
-- 主线程采样（M1.1）。
+- 睡眠/唤醒未接线（M1.8）；CPU EMA（M1.2）；64 位网络（M1.7）。
 - CPU 温度占位（M1.5）。
 - 无外置卷（M1.6）。
 - 32 位网络计数器、VPN 重复统计（M1.7）。

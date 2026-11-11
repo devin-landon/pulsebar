@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `MetricsScheduler`：指标采样在专用串行队列执行，结果回主线程更新 UI。
+- `RateCalculator` / `CPUTickAccumulator`：网络速率与 CPU tick 差分纯逻辑，含单元测试。
+- `SystemMetricsProviding.resetBaselines()`：睡眠唤醒前可清空 CPU/网络基线（M1.8 接线）。
+
+### Changed
+
+- `DashboardStore` 通过调度器异步采样；打开面板触发 `requestSample`，不再在主线程同步跑 IOKit/host API。
+- `NetworkSampler` 改用 `RateCalculator`；`CPUSampler` 改用 `CPUTickAccumulator`。
+
 ## 0.1.0 — 2026-11-11
 
 首个可运行框架（M0）：

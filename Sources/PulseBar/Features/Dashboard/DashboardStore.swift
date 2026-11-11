@@ -10,66 +10,59 @@ final class DashboardStore: ObservableObject {
     let battery: PeripheralBatteryMonitor
     let deviceName: String
 
-    private let metrics: SystemMetricsProviding
+    private let scheduler: MetricsScheduler
     private var interval: TimeInterval
-    private var timer: Timer?
 
     init(
         metrics: SystemMetricsProviding,
         battery: PeripheralBatteryMonitor,
         interval: TimeInterval = 1
     ) {
-        self.metrics = metrics
         self.battery = battery
         self.interval = max(0.5, interval)
         self.deviceName = Self.resolveDeviceName()
+        self.scheduler = MetricsScheduler(provider: metrics, interval: self.interval)
     }
 
     var refreshInterval: TimeInterval { interval }
 
     func start() {
-        sample()
+        scheduler.start { [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                self?.apply(snapshot)
+            }
+        }
+
         if battery.isEnabled {
             battery.start()
         }
-        schedule()
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
+        scheduler.stop()
         battery.stop()
     }
 
+    /// Request an immediate background sample (panel open). UI updates when ready.
     func sample() {
-        let next = metrics.sample()
-        snapshot = next
-        history.append(next)
-        if history.count > 90 {
-            history.removeFirst(history.count - 90)
-        }
+        scheduler.requestSample()
     }
 
     func setInterval(_ newValue: TimeInterval) {
         let clamped = max(0.5, newValue)
         guard clamped != interval else { return }
         interval = clamped
-        if timer != nil {
-            schedule()
-        }
+        scheduler.setInterval(clamped)
     }
 
-    private func schedule() {
-        timer?.invalidate()
+    // MARK: - Apply
 
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.sample()
-            }
+    private func apply(_ next: SystemSnapshot) {
+        snapshot = next
+        history.append(next)
+        if history.count > 90 {
+            history.removeFirst(history.count - 90)
         }
-        timer.tolerance = min(0.15, interval * 0.1)
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
     }
 
     private static func resolveDeviceName() -> String {

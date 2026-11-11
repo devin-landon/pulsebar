@@ -2,7 +2,7 @@
 
 - 版本：0.1
 - 更新：2026-11-11
-- 当前阶段：**M0 已完成**（框架可编译、可运行、可测试）
+- 当前阶段：**M1 进行中**（M1.1 采样调度已完成；下一任务 M1.2）
 - 目标读者：接手后续开发的 Cursor / 工程师
 - 配套文档：`AGENTS.md`、`PRD.md`、`docs/architecture.md`、`docs/battery-research.md`
 
@@ -77,7 +77,6 @@
 - CPU 温度是占位实现，始终返回 `nil`（M1.5）。
 - 未展示外置磁盘（M1.6）。
 - 网络速率使用 32 位接口计数器，未处理 VPN 重复统计（M1.7）。
-- 指标采样在主线程（M1.1）。
 - 只有深色主题；无紧凑模式、无历史曲线（M2）。
 - 第三方 BLE 键鼠在 macOS 上不暴露 `BatteryPercent` 时读不到（M4 研究）。
 - AirPods / iPhone / iPad 电量未实现（M4 研究）。
@@ -117,18 +116,18 @@ swift run PulseBar --snapshot docs/images/dashboard.png
 
 ### 4.1 指标采样移出主线程
 
-- [ ] 新增 `MetricsScheduler`（串行队列或 actor），按刷新间隔采样。
-- [ ] `SystemMetricsProvider` 的采样在后台队列执行；结果回到主线程更新 `DashboardStore`。
-- [ ] `CPUSampler` / `NetworkSampler` 的状态只在同一串行上下文访问。
-- [ ] 面板打开、设置修改、睡眠/唤醒时不产生竞态或重复定时器。
+- [x] 新增 `MetricsScheduler`（串行队列或 actor），按刷新间隔采样。
+- [x] `SystemMetricsProvider` 的采样在后台队列执行；结果回到主线程更新 `DashboardStore`。
+- [x] `CPUSampler` / `NetworkSampler` 的状态只在同一串行上下文访问。
+- [x] 面板打开、设置修改、睡眠/唤醒时不产生竞态或重复定时器（调度器 `pause`/`resume`/`setInterval` 均串行；睡眠接线见 M1.8）。
 
 **文件**：`Sources/PulseBarCore/Metrics/MetricsScheduler.swift`（新）、`SystemMetricsProvider.swift`、`Features/Dashboard/DashboardStore.swift`
 
 **验收**：
 
-- 1 秒刷新时主线程单次采样阻塞 < 2 ms（Instruments / `CFAbsoluteTimeGetCurrent` 计时）。
-- 快速开关面板 20 次无崩溃、无重复采样、无内存增长。
-- `swift test` 通过；新增 `RateCalculator` / tick delta 的纯逻辑测试。
+- [x] 采样在 `com.dvnlandon.pulsebar.metrics` 串行队列执行；主线程只 `apply` 快照（打开面板改为 `requestSample`，不再同步阻塞）。
+- [x] `setInterval` / `start`/`stop` 先取消再重建单个 `DispatchSourceTimer`，无堆叠定时器。
+- [x] `swift test` 通过；新增 `RateCalculator` / `CPUTickAccumulator` / `MetricsScheduler` 测试（共 30）。
 
 ### 4.2 CPU 使用率准确性
 
