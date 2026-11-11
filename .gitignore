@@ -1,0 +1,27 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+
+# Build products
+PulseBar.app/
+*.app
+*.dSYM
+
+# macOS
+.DS_Store
+._*
+
+# Local scratch
+.env
+*.local.md
+
+# Local build caches (restricted environments)
+.cache/
+.tmp/
